@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+websockets
+python-multipart
+ultralytics
+easyocr
+opencv-python
+numpy
+pillow
+python-dotenv
+pydantic
