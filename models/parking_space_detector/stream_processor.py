@@ -8,6 +8,8 @@ import os
 import gc
 from dotenv import load_dotenv
 from .parking_detector import ParkingSlotDetector
+from utils.config import Config
+from utils.dynamic_frame_skipper import DynamicFrameSkipper
 
 load_dotenv()
 
@@ -41,7 +43,22 @@ class ParkingStreamProcessor:
         self.detector = self.get_detector()  # Use shared instance
         
         # Configuration
-        self.skip_frames = skip_frames or int(os.getenv("LOT_FRAME_SKIP", "10"))
+        self.use_dynamic_skipping = Config.use_dynamic_frame_skipping()
+        
+        if self.use_dynamic_skipping:
+            # Use dynamic frame skipper
+            initial_skip = skip_frames or int(os.getenv("LOT_FRAME_SKIP", "10"))
+            self.frame_skipper = DynamicFrameSkipper(
+                initial_skip=initial_skip,
+                min_skip=2,
+                max_skip=50,
+                target_fps=5  # Parking changes slowly
+            )
+            self.skip_frames = initial_skip  # For reporting
+        else:
+            # Use fixed frame skipping
+            self.skip_frames = skip_frames or int(os.getenv("LOT_FRAME_SKIP", "10"))
+            self.frame_skipper = None
         
         # State
         self.frame_count = 0
@@ -52,7 +69,10 @@ class ParkingStreamProcessor:
     
     def should_process_frame(self):
         """Determine if current frame should be processed"""
-        return self.frame_count % self.skip_frames == 0
+        if self.use_dynamic_skipping:
+            return self.frame_skipper.should_process_frame()
+        else:
+            return self.frame_count % self.skip_frames == 0
     
     def detect_state_change(self, current_occupancy):
         """
@@ -92,7 +112,11 @@ class ParkingStreamProcessor:
         Returns:
             dict: Processing result with slot statuses and metadata, or None if frame skipped
         """
-        self.frame_count += 1
+        if self.use_dynamic_skipping:
+            self.frame_count = self.frame_skipper.frame_count
+        else:
+            self.frame_count += 1
+        
         start_time = time.time()
         
         # Frame skipping
@@ -106,6 +130,11 @@ class ParkingStreamProcessor:
         
         # Delete frame_bytes immediately after processing
         del frame_bytes
+        
+        # Record processing time for dynamic skipping
+        processing_time = time.time() - start_time
+        if self.use_dynamic_skipping:
+            self.frame_skipper.record_processing_time(processing_time)
         
         if not result.get("success"):
             gc.collect()  # Clean up on error
@@ -130,7 +159,7 @@ class ParkingStreamProcessor:
             gc.collect()
         
         self.processed_count += 1
-        processing_time = int((time.time() - start_time) * 1000)
+        processing_time_ms = int(processing_time * 1000)
         
         response = {
             "success": True,
@@ -143,12 +172,16 @@ class ParkingStreamProcessor:
             "empty": empty,
             "occupancy_rate": occupancy_rate,
             "slots": result["slots"],
-            "processing_time_ms": processing_time
+            "processing_time_ms": processing_time_ms
         }
         
         # Add state change info if detected
         if state_change:
             response["state_change"] = state_change
+        
+        # Add dynamic skip info if enabled
+        if self.use_dynamic_skipping:
+            response["current_skip_rate"] = self.frame_skipper.get_current_skip()
         
         return response
     
@@ -157,6 +190,8 @@ class ParkingStreamProcessor:
         self.frame_count = 0
         self.processed_count = 0
         self.last_occupancy = None
+        if self.use_dynamic_skipping:
+            self.frame_skipper.reset()
         gc.collect()  # Clean up memory
         # State reset (silent)
     

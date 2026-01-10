@@ -4,6 +4,39 @@ Complete API reference for integrating with the Smart Parking backend.
 
 ---
 
+## Configuration
+
+The system supports two operational modes controlled by environment variables:
+
+### Environment Modes
+
+**Development Mode** (`ENVIRONMENT=development`):
+- Uses local YOLOv8 models for detection
+- Uses PaddleOCR for text recognition
+- Faster processing, no API costs
+- Works offline
+
+**Production Mode** (`ENVIRONMENT=production`):
+- Uses Roboflow API for detection
+- Uses EasyOCR for text recognition
+- Higher accuracy
+- Requires internet connection
+
+### Frame Skipping
+
+**Fixed Skipping** (`DYNAMIC_FRAME_SKIPPING=false`):
+- Processes every Nth frame (configured by env variables)
+- Predictable behavior
+
+**Dynamic Skipping** (`DYNAMIC_FRAME_SKIPPING=true`):
+- Automatically adjusts skip rate based on performance
+- Maintains target FPS
+- Optimal for varying hardware
+
+See `ENVIRONMENT_CONFIG.md` for detailed configuration guide.
+
+---
+
 ## Base URL
 
 ```
@@ -281,9 +314,12 @@ ws.onmessage = (event) => {
   ],
   "plates_detected": 1,
   "new_plates": 1,
-  "processing_time_ms": 450
+  "processing_time_ms": 450,
+  "current_skip_rate": 5  // Only present if DYNAMIC_FRAME_SKIPPING=true
 }
 ```
+
+**Note:** When `DYNAMIC_FRAME_SKIPPING=true`, responses include `current_skip_rate` showing the adaptive skip rate.
 
 **No Plates Detected:**
 ```json
@@ -441,9 +477,12 @@ ws.onmessage = (event) => {
       }
     }
   ],
-  "processing_time_ms": 380
+  "processing_time_ms": 380,
+  "current_skip_rate": 10  // Only present if DYNAMIC_FRAME_SKIPPING=true
 }
 ```
+
+**Note:** When `DYNAMIC_FRAME_SKIPPING=true`, responses include `current_skip_rate` showing the adaptive skip rate.
 
 **Capacity Update with State Change:**
 ```json

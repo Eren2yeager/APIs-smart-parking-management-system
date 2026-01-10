@@ -11,3 +11,7 @@ python-dotenv
 pydantic
 requests
 roboflow
+
+# Optional: EasyOCR for production mode (more accurate OCR)
+easyocr
+torch

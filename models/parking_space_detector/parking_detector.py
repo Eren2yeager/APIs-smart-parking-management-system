@@ -15,7 +15,8 @@ load_dotenv()
 
 class ParkingSlotDetector:
     """
-    Detects parking slot occupancy using Roboflow model
+    Detects parking slot occupancy using Roboflow API
+    Used in both development and production modes
     """
     
     def __init__(self):
@@ -30,7 +31,7 @@ class ParkingSlotDetector:
             self.confidence = int(os.getenv("PARKING_CONFIDENCE", "40"))
             self.overlap = int(os.getenv("PARKING_OVERLAP", "30"))
             
-            # Model initialized (silent)
+            print("✓ Using Roboflow API parking detector")
         except Exception as e:
             print(f"✗ Failed to initialize Roboflow: {str(e)}")
             raise

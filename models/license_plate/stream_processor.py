@@ -8,6 +8,8 @@ import os
 import gc
 from dotenv import load_dotenv
 from .pipeline import PlateRecognitionPipeline
+from utils.config import Config
+from utils.dynamic_frame_skipper import DynamicFrameSkipper
 
 load_dotenv()
 
@@ -42,7 +44,23 @@ class PlateStreamProcessor:
         self.pipeline = self.get_pipeline()  # Use shared instance
         
         # Configuration
-        self.skip_frames = skip_frames or int(os.getenv("GATE_FRAME_SKIP", "5"))
+        self.use_dynamic_skipping = Config.use_dynamic_frame_skipping()
+        
+        if self.use_dynamic_skipping:
+            # Use dynamic frame skipper
+            initial_skip = skip_frames or int(os.getenv("GATE_FRAME_SKIP", "5"))
+            self.frame_skipper = DynamicFrameSkipper(
+                initial_skip=initial_skip,
+                min_skip=1,
+                max_skip=30,
+                target_fps=10
+            )
+            self.skip_frames = initial_skip  # For reporting
+        else:
+            # Use fixed frame skipping
+            self.skip_frames = skip_frames or int(os.getenv("GATE_FRAME_SKIP", "5"))
+            self.frame_skipper = None
+        
         self.dedup_window = dedup_window or int(os.getenv("GATE_DEDUP_WINDOW", "10"))
         
         # State
@@ -55,7 +73,10 @@ class PlateStreamProcessor:
     
     def should_process_frame(self):
         """Determine if current frame should be processed"""
-        return self.frame_count % self.skip_frames == 0
+        if self.use_dynamic_skipping:
+            return self.frame_skipper.should_process_frame()
+        else:
+            return self.frame_count % self.skip_frames == 0
     
     def is_duplicate(self, plate_number):
         """
@@ -108,7 +129,11 @@ class PlateStreamProcessor:
         Returns:
             dict: Processing result with plates and metadata, or None if frame skipped
         """
-        self.frame_count += 1
+        if self.use_dynamic_skipping:
+            self.frame_count = self.frame_skipper.frame_count
+        else:
+            self.frame_count += 1
+        
         start_time = time.time()
         
         # Frame skipping
@@ -122,6 +147,11 @@ class PlateStreamProcessor:
         
         # Delete frame_bytes immediately after processing
         del frame_bytes
+        
+        # Record processing time for dynamic skipping
+        processing_time = time.time() - start_time
+        if self.use_dynamic_skipping:
+            self.frame_skipper.record_processing_time(processing_time)
         
         if not result.get("success"):
             gc.collect()  # Clean up on error
@@ -153,9 +183,9 @@ class PlateStreamProcessor:
             gc.collect()  # Force garbage collection
         
         self.processed_count += 1
-        processing_time = int((time.time() - start_time) * 1000)
+        processing_time_ms = int(processing_time * 1000)
         
-        return {
+        response = {
             "success": True,
             "type": "plate_detection",
             "timestamp": time.time(),
@@ -164,14 +194,22 @@ class PlateStreamProcessor:
             "plates": plates_with_status,
             "plates_detected": len(plates_with_status),
             "new_plates": sum(1 for p in plates_with_status if p["is_new"]),
-            "processing_time_ms": processing_time
+            "processing_time_ms": processing_time_ms
         }
+        
+        # Add dynamic skip info if enabled
+        if self.use_dynamic_skipping:
+            response["current_skip_rate"] = self.frame_skipper.get_current_skip()
+        
+        return response
     
     def reset_state(self):
         """Reset processor state (for new session)"""
         self.frame_count = 0
         self.processed_count = 0
         self.seen_plates.clear()
+        if self.use_dynamic_skipping:
+            self.frame_skipper.reset()
         gc.collect()  # Clean up memory
         # State reset (silent)
     

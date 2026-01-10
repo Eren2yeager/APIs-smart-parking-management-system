@@ -19,18 +19,17 @@ class LicensePlateDetector:
             project = rf.workspace().project("license-plate-recognition-rxg4e")
             self.model = project.version(11).model
             
-            # Get confidence (handle both float 0.0-1.0 and int 0-100 formats)
+            # Get confidence
             conf_str = os.getenv("PLATE_DETECTION_CONFIDENCE", "40")
             try:
                 conf_val = float(conf_str)
-                # If it's a decimal (0.0-1.0), convert to percentage
                 self.confidence = int(conf_val * 100) if conf_val <= 1.0 else int(conf_val)
             except ValueError:
                 self.confidence = 40
             
             self.overlap = int(os.getenv("PLATE_DETECTION_OVERLAP", "30"))
             
-            # Model initialized (silent)
+            print("✓ Using Roboflow API for license plate detection")
         except Exception as e:
             print(f"✗ Failed to initialize Roboflow: {str(e)}")
             raise

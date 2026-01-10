@@ -11,6 +11,7 @@ from models.license_plate.stream_processor import PlateStreamProcessor
 from models.parking_space_detector import ParkingSlotDetector
 from models.parking_space_detector.stream_processor import ParkingStreamProcessor
 from utils.frame_utils import base64_to_bytes
+from utils.config import Config
 import uvicorn
 import json
 
@@ -351,13 +352,22 @@ if __name__ == "__main__":
     os.environ['OMP_NUM_THREADS'] = '1'  # Reduce OpenCV memory usage
     os.environ['MALLOC_TRIM_THRESHOLD_'] = '100000'  # Aggressive memory release
     
+    # Get configuration
+    config = Config.get_config_summary()
+    
     print("=" * 60)
     print("🚗 Smart Parking Management System")
     print("=" * 60)
-    print("\n📦 AI Models (lazy loading):")
-    print("  • Roboflow API - License Plate Detection (cloud)")
-    print("  • PaddleOCR - Text Recognition (local)")
-    print("  • Roboflow API - Parking Slot Detection (cloud)")
+    print(f"\n⚙️  Environment: {config['environment'].upper()}")
+    print(f"  • OCR Engine: {config['ocr_engine'].upper()}")
+    print(f"  • Detection: {config['detection']}")
+    print(f"  • Frame Skipping: {'Dynamic' if config['dynamic_frame_skipping'] else 'Fixed'}")
+    
+    print("\n📦 AI Models:")
+    print(f"  • Roboflow API - License Plate Detection")
+    print(f"  • {config['ocr_engine'].upper()} - Text Recognition")
+    print(f"  • Roboflow API - Parking Slot Detection")
+    
     print("\n🌐 API Endpoints:")
     print("  • POST /api/recognize-plate - License Plate Recognition")
     print("  • POST /api/detect-parking-slots - Parking Slot Detection")
@@ -369,12 +379,14 @@ if __name__ == "__main__":
     print("  • Camera: http://YOUR_IP:3000/camera")
     print("  • Backend: http://localhost:3000/test-backend")
     print("\n⚙️  Configuration:")
-    print(f"  • Gate frame skip: {os.getenv('GATE_FRAME_SKIP', '1')}")
-    print(f"  • Lot frame skip: {os.getenv('LOT_FRAME_SKIP', '1')}")
-    print("\n💾 Memory Optimizations:")
-    print("  • Roboflow API (no local YOLO models)")
+    print(f"  • Gate frame skip: {os.getenv('GATE_FRAME_SKIP', '50')}")
+    print(f"  • Lot frame skip: {os.getenv('LOT_FRAME_SKIP', '50')}")
+    
+    print("\n💾 Optimizations:")
+    print("  • Roboflow API (cloud-based detection)")
     print("  • Image resizing (max 1280px)")
     print("  • Aggressive garbage collection")
+    
     print("=" * 60)
     print()
     
