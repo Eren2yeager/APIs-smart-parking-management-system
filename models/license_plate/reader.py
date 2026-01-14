@@ -27,8 +27,8 @@ class PlateReader:
             self._init_easyocr()
     
     def _init_paddleocr(self):
-        """Initialize PaddleOCR (development mode) with performance optimizations"""
-        print("Loading PaddleOCR (development mode) with GPU acceleration...")
+        """Initialize PaddleOCR (development mode)"""
+        print("Loading PaddleOCR (development mode)...")
         
         # Suppress output during initialization
         import io
@@ -37,48 +37,14 @@ class PlateReader:
         
         try:
             from paddleocr import PaddleOCR
-            import multiprocessing
-            
             logging.getLogger('ppocr').setLevel(logging.ERROR)
             logging.getLogger('paddlex').setLevel(logging.ERROR)
-            
-            # Get CPU count for optimal thread usage
-            cpu_count = multiprocessing.cpu_count()
-            # Use 50-75% of available CPU threads
-            cpu_threads = max(2, int(cpu_count * 0.6))
-            
-            # Try GPU first, fallback to optimized CPU
-            try:
-                self.reader = PaddleOCR(
-                    lang='en',
-                    use_angle_cls=False,
-                    gpu_mem=500,  # Allocate 500MB GPU memory
-                    enable_mkldnn=True,  # Enable Intel MKL-DNN for CPU optimization
-                    cpu_threads=cpu_threads,  # Use multiple CPU threads
-                    use_tensorrt=False,  # TensorRT can be enabled if installed
-                    det_db_box_thresh=0.5,  # Detection threshold
-                    det_db_unclip_ratio=1.6,  # Text region expansion
-                    rec_batch_num=6,  # Process 6 images in parallel
-                )
-                print(f"✓ PaddleOCR GPU mode enabled | CPU threads: {cpu_threads}")
-            except Exception as gpu_error:
-                print(f"⚠️  GPU not available, using optimized CPU mode: {gpu_error}")
-                self.reader = PaddleOCR(
-                    lang='en',
-                    use_angle_cls=False,
-                    enable_mkldnn=True,  # Intel MKL-DNN optimization
-                    cpu_threads=cpu_threads,  # Use multiple CPU threads
-                    det_db_box_thresh=0.5,
-                    det_db_unclip_ratio=1.6,
-                    rec_batch_num=6,  # Batch processing
-                )
-                print(f"✓ PaddleOCR CPU mode optimized | CPU threads: {cpu_threads}")
-            
+            self.reader = PaddleOCR(lang='en', use_angle_cls=False)
             self.reader_type = "paddleocr"
         finally:
             sys.stderr = _stderr
         
-        print("PaddleOCR ready with performance optimizations!")
+        print("PaddleOCR ready!")
     
     def _init_easyocr(self):
         """Initialize EasyOCR (production mode)"""

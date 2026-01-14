@@ -348,26 +348,8 @@ async def lot_monitor_endpoint(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-    # Set performance-optimized environment variables
-    import multiprocessing
-    cpu_count = multiprocessing.cpu_count()
-    
-    # Use 50-75% of CPU cores for parallel processing
-    num_threads = max(2, int(cpu_count * 0.6))
-    
-    # PaddlePaddle performance settings
-    os.environ['OMP_NUM_THREADS'] = str(num_threads)  # OpenMP threads
-    os.environ['MKL_NUM_THREADS'] = str(num_threads)  # Intel MKL threads
-    os.environ['OPENBLAS_NUM_THREADS'] = str(num_threads)  # OpenBLAS threads
-    os.environ['NUMEXPR_NUM_THREADS'] = str(num_threads)  # NumExpr threads
-    
-    # PaddlePaddle specific optimizations
-    os.environ['FLAGS_fraction_of_gpu_memory_to_use'] = '0.5'  # Use 50% GPU memory
-    os.environ['FLAGS_eager_delete_tensor_gb'] = '0.0'  # Aggressive memory cleanup
-    os.environ['FLAGS_fast_eager_deletion_mode'] = 'true'  # Fast memory release
-    os.environ['CPU_NUM'] = str(num_threads)  # PaddlePaddle CPU threads
-    
-    # Memory management
+    # Set memory-efficient environment variables
+    os.environ['OMP_NUM_THREADS'] = '1'  # Reduce OpenCV memory usage
     os.environ['MALLOC_TRIM_THRESHOLD_'] = '100000'  # Aggressive memory release
     
     # Get configuration
@@ -380,11 +362,10 @@ if __name__ == "__main__":
     print(f"  • OCR Engine: {config['ocr_engine'].upper()}")
     print(f"  • Detection: {config['detection']}")
     print(f"  • Frame Skipping: {'Dynamic' if config['dynamic_frame_skipping'] else 'Fixed'}")
-    print(f"  • CPU Threads: {num_threads}/{cpu_count} ({int(num_threads/cpu_count*100)}% utilization)")
     
     print("\n📦 AI Models:")
     print(f"  • Roboflow API - License Plate Detection")
-    print(f"  • {config['ocr_engine'].upper()} - Text Recognition (GPU/Multi-threaded)")
+    print(f"  • {config['ocr_engine'].upper()} - Text Recognition")
     print(f"  • Roboflow API - Parking Slot Detection")
     
     print("\n🌐 API Endpoints:")
@@ -404,10 +385,6 @@ if __name__ == "__main__":
     print("\n💾 Optimizations:")
     print("  • Roboflow API (cloud-based detection)")
     print("  • Image resizing (max 1280px)")
-    print("  • GPU acceleration (if available)")
-    print(f"  • Multi-threading ({num_threads} threads)")
-    print("  • Batch processing (6 images/batch)")
-    print("  • Intel MKL-DNN optimization")
     print("  • Aggressive garbage collection")
     
     print("=" * 60)
