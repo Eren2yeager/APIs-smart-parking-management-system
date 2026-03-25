@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-<<<<<<< HEAD
 build/
 develop-eggs/
 dist/
@@ -30,36 +29,22 @@ ENV/
 # Environment Variables
 .env
 .env.local
-=======
-venv/
-env/
-ENV/
-
-# Environment variables
-.env
-
-
->>>>>>> main
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-<<<<<<< HEAD
 *~
 
 # Logs
 *.log
 logs/
-=======
->>>>>>> main
 
 # OS
 .DS_Store
 Thumbs.db
 
-<<<<<<< HEAD
 # Testing
 .pytest_cache/
 .coverage
@@ -67,11 +52,3 @@ htmlcov/
 
 # Pathway
 .pathway/
-=======
-# Logs
-*.log
-
-# Debug
-debug_crops/
-test_images/
->>>>>>> main

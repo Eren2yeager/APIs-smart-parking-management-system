@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # AI/ML Models
 roboflow>=1.1.0
 easyocr>=1.7.0
@@ -25,22 +24,3 @@ python-dateutil>=2.8.2
 
 # Logging
 loguru>=0.7.0
-=======
-fastapi
-uvicorn
-websockets
-python-multipart
-paddleocr
-paddlepaddle
-opencv-python
-numpy
-pillow
-python-dotenv
-pydantic
-requests
-roboflow
-
-# Optional: EasyOCR for production mode (more accurate OCR)
-easyocr
-torch
->>>>>>> main
