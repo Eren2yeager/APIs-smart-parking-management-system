@@ -64,23 +64,15 @@ class LicensePlateDetectorModel:
             self.detection_model = None
     
     def _init_easyocr(self):
-        """Initialize EasyOCR reader (GPU only if CUDA is available)."""
+        """Initialize EasyOCR reader (CPU mode for Roboflow API setup)."""
         try:
-            import torch
-
-            use_gpu = torch.cuda.is_available()
-        except Exception:
-            use_gpu = False
-
-        try:
-            logger.info("Loading EasyOCR...")
-            self.ocr_reader = easyocr.Reader(["en"], gpu=use_gpu)
-            mode = "GPU (CUDA)" if use_gpu else "CPU"
-            logger.info(f"EasyOCR loaded successfully ({mode})")
-        except Exception as e:
-            logger.warning(f"EasyOCR init failed ({e}); retrying CPU-only")
+            logger.info("Loading EasyOCR (CPU mode)...")
+            # Using CPU mode since Roboflow handles model inference on their servers
             self.ocr_reader = easyocr.Reader(["en"], gpu=False)
             logger.info("EasyOCR loaded successfully (CPU)")
+        except Exception as e:
+            logger.error(f"EasyOCR initialization failed: {e}")
+            raise
     
     def detect_and_recognize(
         self,
