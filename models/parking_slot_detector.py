@@ -1,17 +1,16 @@
 """
 Parking Slot Detection Model
-Detects occupied and empty parking spaces using Roboflow
+Uses Roboflow Workflow API for parking slot occupancy detection
 """
 
-from roboflow import Roboflow
+from inference_sdk import InferenceHTTPClient
 import cv2
 import numpy as np
-from PIL import Image
 import tempfile
 import os
 import time
 from typing import List
-from io import BytesIO
+from PIL import Image
 
 from config.settings import settings
 from utils.logger import logger
@@ -19,41 +18,43 @@ from schemas.detection_result import ParkingSlotDetection, ParkingSlotDetectionR
 
 
 class ParkingSlotDetectorModel:
-    """Parking slot occupancy detection model using Roboflow"""
+    """Parking slot occupancy detection model using Roboflow Workflow API"""
     
     def __init__(self):
-        """Initialize Roboflow parking slot detection model"""
-        self.detection_model = None
-        self._init_roboflow()
-        if self.detection_model:
-            logger.info("Parking Slot Detector initialized successfully")
+        """Initialize Roboflow Workflow client"""
+        self.client = None
+        self._init_workflow_client()
+        
+        if self.client:
+            logger.info("Parking Slot Detector initialized successfully (Workflow API)")
         else:
-            logger.warning("Parking Slot Detector initialized WITHOUT model (will retry on first request)")
+            logger.warning("Parking Slot Detector initialized WITHOUT client (will retry on first request)")
     
-    def _init_roboflow(self):
-        """Initialize Roboflow parking detection model"""
+    def _init_workflow_client(self):
+        """Initialize Roboflow Workflow HTTP client"""
         try:
-            rf = Roboflow(api_key=settings.roboflow_api_key)
+            self.client = InferenceHTTPClient(
+                api_url="https://serverless.roboflow.com",
+                api_key=settings.roboflow_api_key
+            )
             
-            # Use workspace() without parameter if workspace is empty
-            if settings.roboflow_workspace:
-                project = rf.workspace(settings.roboflow_workspace).project(
-                    settings.roboflow_parking_slot_project
-                )
-            else:
-                project = rf.workspace().project(settings.roboflow_parking_slot_project)
+            # Store workflow configuration from environment variables
+            self.workspace_name = settings.roboflow_workspace
+            self.workflow_id = settings.roboflow_parking_slot_workflow_id
             
-            self.detection_model = project.version(settings.roboflow_parking_slot_version).model
+            if not self.workspace_name:
+                raise ValueError("ROBOFLOW_WORKSPACE environment variable is required")
+            if not settings.roboflow_api_key:
+                raise ValueError("ROBOFLOW_API_KEY environment variable is required")
             
-            # Convert confidence threshold (already 0-100 from .env)
-            self.confidence_threshold = int(settings.parking_slot_confidence)
-            self.overlap_threshold = 30
+            # Convert confidence threshold (0-100 to 0-1 for comparison)
+            self.confidence_threshold = settings.parking_slot_confidence / 100.0
             
-            logger.info(f"Roboflow parking slot detector loaded (confidence: {self.confidence_threshold}%)")
+            logger.info(f"Roboflow Workflow client initialized (workspace: {self.workspace_name}, workflow: {self.workflow_id})")
         except Exception as e:
-            logger.error(f"Failed to initialize Roboflow parking detector: {e}")
+            logger.error(f"Failed to initialize Roboflow Workflow client: {e}")
             logger.warning("Parking slot detector will not be available")
-            self.detection_model = None
+            self.client = None
     
     def detect_slots(
         self,
@@ -62,7 +63,7 @@ class ParkingSlotDetectorModel:
         parking_lot_id: str
     ) -> ParkingSlotDetectionResult:
         """
-        Detect parking slot occupancy
+        Detect parking slot occupancy using Roboflow Workflow
         
         Args:
             image: OpenCV image (numpy array)
@@ -76,57 +77,129 @@ class ParkingSlotDetectorModel:
         temp_path = None
         
         try:
-            # Convert to PIL Image
+            # Lazy retry: if client failed to load at startup, try again now
+            if self.client is None:
+                logger.info("Retrying Roboflow Workflow client initialization...")
+                self._init_workflow_client()
+                if self.client is None:
+                    raise RuntimeError("Roboflow Workflow client not available — check API key and network")
+            
+            # Convert to PIL Image and save to temporary file
             pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
             
-            # Save to temporary file (Roboflow requires file path)
+            # Save to temporary file (workflow handles optimal sizing)
             with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
                 temp_path = temp_file.name
                 pil_image.save(temp_path, quality=85)
             
-            # Lazy retry: if model failed to load at startup, try again now
-            if self.detection_model is None:
-                logger.info("Retrying Roboflow parking slot model initialization...")
-                self._init_roboflow()
-                if self.detection_model is None:
-                    raise RuntimeError("Roboflow parking slot model not available — check API key and network")
-
-            # Run Roboflow detection
-            result = self.detection_model.predict(
-                temp_path,
-                confidence=self.confidence_threshold,
-                overlap=self.overlap_threshold
-            ).json()
+            # Run workflow
+            result = self.client.run_workflow(
+                workspace_name=self.workspace_name,
+                workflow_id=self.workflow_id,
+                images={"image": temp_path},
+                use_cache=True
+            )
             
-            # Parse predictions
-            occupied_count = 0
-            empty_count = 0
-            slots = []
+            # Parse workflow output
+            return self._parse_workflow_output(result, camera_id, parking_lot_id, start_time)
             
-            for idx, prediction in enumerate(result.get('predictions', [])):
-                predicted_class = prediction['class']
-                confidence = prediction['confidence']
+        except Exception as e:
+            logger.error(f"Parking slot detection failed: {e}")
+            # Return empty result on error
+            return ParkingSlotDetectionResult(
+                parking_lot_id=parking_lot_id,
+                camera_id=camera_id,
+                total_slots=0,
+                occupied=0,
+                empty=0,
+                occupancy_rate=0.0,
+                slots=[],
+                processing_time_ms=(time.time() - start_time) * 1000
+            )
+        finally:
+            # Cleanup temp file
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+    
+    def _parse_workflow_output(
+        self,
+        result: List,
+        camera_id: str,
+        parking_lot_id: str,
+        start_time: float
+    ) -> ParkingSlotDetectionResult:
+        """
+        Parse workflow output and convert to ParkingSlotDetectionResult
+        
+        Args:
+            result: Workflow API response
+            camera_id: Camera identifier
+            parking_lot_id: Parking lot identifier
+            start_time: Detection start time
+            
+        Returns:
+            ParkingSlotDetectionResult object
+        """
+        occupied_count = 0
+        empty_count = 0
+        slots = []
+        
+        try:
+            if not result or len(result) == 0:
+                return ParkingSlotDetectionResult(
+                    parking_lot_id=parking_lot_id,
+                    camera_id=camera_id,
+                    total_slots=0,
+                    occupied=0,
+                    empty=0,
+                    occupancy_rate=0.0,
+                    slots=[],
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+            
+            # Extract predictions from workflow output
+            workflow_output = result[0]
+            predictions = workflow_output.get("predictions", {}).get("predictions", [])
+            
+            # Process each prediction
+            for idx, prediction in enumerate(predictions):
+                # Filter by confidence threshold
+                confidence = prediction.get("confidence", 0.0)
+                if confidence < self.confidence_threshold:
+                    continue
                 
-                # Extract bounding box (convert from center to corners)
-                x = int(prediction['x'])
-                y = int(prediction['y'])
-                width = int(prediction['width'])
-                height = int(prediction['height'])
+                # Get class (parked-vehicle = occupied, empty-parking-slot = empty)
+                predicted_class = prediction.get("class", "")
+                
+                # Map workflow classes to our status format
+                if predicted_class == "parked-vehicle":
+                    status = "occupied"
+                    occupied_count += 1
+                elif predicted_class == "empty-parking-slot":
+                    status = "empty"
+                    empty_count += 1
+                else:
+                    # Unknown class, skip
+                    continue
+                
+                # Extract bounding box (convert from center coordinates to corner coordinates)
+                x = int(prediction["x"])
+                y = int(prediction["y"])
+                width = int(prediction["width"])
+                height = int(prediction["height"])
                 
                 x1 = x - width // 2
                 y1 = y - height // 2
                 x2 = x + width // 2
                 y2 = y + height // 2
                 
-                # Count slots
-                if predicted_class == 'occupied':
-                    occupied_count += 1
-                elif predicted_class == 'empty':
-                    empty_count += 1
-                
+                # Create slot detection object
                 slots.append(ParkingSlotDetection(
                     slot_id=idx + 1,
-                    status=predicted_class,
+                    status=status,
                     confidence=confidence,
                     bbox=BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2)
                 ))
@@ -149,8 +222,7 @@ class ParkingSlotDetectorModel:
             )
             
         except Exception as e:
-            logger.error(f"Parking slot detection failed: {e}")
-            # Return empty result on error
+            logger.error(f"Failed to parse workflow output: {e}")
             return ParkingSlotDetectionResult(
                 parking_lot_id=parking_lot_id,
                 camera_id=camera_id,
@@ -161,10 +233,3 @@ class ParkingSlotDetectorModel:
                 slots=[],
                 processing_time_ms=(time.time() - start_time) * 1000
             )
-        finally:
-            # Cleanup temp file
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass

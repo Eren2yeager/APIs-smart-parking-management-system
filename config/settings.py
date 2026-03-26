@@ -30,16 +30,15 @@ class Settings(BaseSettings):
     ai_backend_port: int = _env_int("AI_BACKEND_PORT", None, 8000)
     ai_backend_log_level: str = _env("AI_BACKEND_LOG_LEVEL", None, "INFO")
 
+    # Roboflow Workflow API Configuration
     roboflow_api_key: str = os.getenv("ROBOFLOW_API_KEY", "")
-    roboflow_workspace: str = os.getenv("ROBOFLOW_WORKSPACE", "")
-    roboflow_license_plate_project: str = os.getenv("ROBOFLOW_LICENSE_PLATE_PROJECT", "")
-    roboflow_license_plate_version: int = int(os.getenv("ROBOFLOW_LICENSE_PLATE_VERSION", "1"))
-    roboflow_parking_slot_project: str = os.getenv("ROBOFLOW_PARKING_SLOT_PROJECT", "")
-    roboflow_parking_slot_version: int = int(os.getenv("ROBOFLOW_PARKING_SLOT_VERSION", "1"))
+    roboflow_workspace: str = os.getenv("ROBOFLOW_WORKSPACE", "sanar-gautam")
+    roboflow_license_plate_workflow_id: str = os.getenv("ROBOFLOW_LICENSE_PLATE_WORKFLOW_ID", "find-license-plates")
+    roboflow_parking_slot_workflow_id: str = os.getenv("ROBOFLOW_PARKING_SLOT_WORKFLOW_ID", "find-parked-vehicles-and-empty-parking-slots")
 
+    # Detection Confidence Thresholds (0-100, converted to 0-1 internally)
     plate_detection_confidence: float = float(os.getenv("PLATE_DETECTION_CONFIDENCE", "20"))
     parking_slot_confidence: float = float(os.getenv("PARKING_SLOT_CONFIDENCE", "20"))
-    vehicle_detection_confidence: float = float(os.getenv("VEHICLE_DETECTION_CONFIDENCE", "50"))
 
     gate_frame_skip: int = int(os.getenv("GATE_FRAME_SKIP", "10"))
     lot_frame_skip: int = int(os.getenv("LOT_FRAME_SKIP", "20"))

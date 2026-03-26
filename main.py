@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict, List
 import base64
@@ -20,7 +21,6 @@ from utils.logger import logger
 from utils.frame_processor import FrameProcessor
 from models.license_plate_detector import LicensePlateDetectorModel
 from models.parking_slot_detector import ParkingSlotDetectorModel
-from models.vehicle_detector import VehicleDetectorModel
 from schemas.camera_frame import CameraFrameSchema, FrameType
 from schemas.detection_result import DetectionResult
 
@@ -29,8 +29,10 @@ from ai_event_pipeline import get_ai_event_pipeline
 # Global model instances
 license_plate_detector = None
 parking_slot_detector = None
-vehicle_detector = None
 frame_processor = FrameProcessor()
+
+# Thread pool for async processing
+executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="detection-worker")
 
 # AI event pipeline (webhooks, dedupe, capacity aggregation)
 ai_event_pipeline = None
@@ -82,32 +84,29 @@ manager = ConnectionManager()
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI app"""
     # Startup
-    global license_plate_detector, parking_slot_detector, vehicle_detector, ai_event_pipeline
+    global license_plate_detector, parking_slot_detector, ai_event_pipeline
 
     logger.info("Starting AI Smart Parking System...")
     logger.info(f"Host: {settings.ai_backend_host}:{settings.ai_backend_port}")
     
     # Initialize AI models
     try:
-        logger.info("Loading AI models...")
+        logger.info("Loading AI models (Roboflow Workflow API)...")
         license_plate_detector = LicensePlateDetectorModel()
         parking_slot_detector = ParkingSlotDetectorModel()
-        vehicle_detector = VehicleDetectorModel()
         logger.info("Models initialization complete!")
         
         # Check which models are available
         models_status = []
-        if license_plate_detector and hasattr(license_plate_detector, 'detection_model') and license_plate_detector.detection_model:
-            models_status.append("✓ License Plate Detector")
+        if license_plate_detector and hasattr(license_plate_detector, 'client') and license_plate_detector.client:
+            models_status.append("✓ License Plate Detector (Workflow API)")
         else:
             models_status.append("✗ License Plate Detector (unavailable)")
             
-        if parking_slot_detector and hasattr(parking_slot_detector, 'detection_model') and parking_slot_detector.detection_model:
-            models_status.append("✓ Parking Slot Detector")
+        if parking_slot_detector and hasattr(parking_slot_detector, 'client') and parking_slot_detector.client:
+            models_status.append("✓ Parking Slot Detector (Workflow API)")
         else:
             models_status.append("✗ Parking Slot Detector (unavailable)")
-            
-        models_status.append("✓ Vehicle Detector (placeholder)")
         
         for status in models_status:
             logger.info(status)
@@ -169,8 +168,7 @@ async def health_check():
         "backend": "ai",
         "models": {
             "license_plate": license_plate_detector is not None,
-            "parking_slot": parking_slot_detector is not None,
-            "vehicle": vehicle_detector is not None
+            "parking_slot": parking_slot_detector is not None
         },
         "active_streams": gate_count + lot_count,
         "gate_monitor_connections": gate_count,
@@ -297,16 +295,21 @@ async def gate_monitor_websocket(websocket: WebSocket):
                 continue
             
             try:
+                # Decode image (fast operation, keep synchronous)
                 image = frame_processor.decode_base64_image(image_data)
                 camera_id = (data.get("camera_id") or data.get("gate_id") or data.get("lot_id") or "unknown")
                 parking_lot_id = (data.get("parking_lot_id") or data.get("parkingLotId") or data.get("gate_id") or data.get("lot_id") or "unknown")
                 event_type = data.get("event_type", "entry")
                 logger.debug(f"[GATE] Frame received (#{frame_count}): lot={parking_lot_id}, camera={camera_id}, event_type={event_type}, image_len={len(image_data)}")
                 
-                detections = license_plate_detector.detect_and_recognize(
+                # Run detection in thread pool (non-blocking)
+                loop = asyncio.get_event_loop()
+                detections = await loop.run_in_executor(
+                    executor,
+                    license_plate_detector.detect_and_recognize,
                     image,
-                    camera_id=camera_id,
-                    parking_lot_id=parking_lot_id
+                    camera_id,
+                    parking_lot_id
                 )
                 
                 if ai_event_pipeline and detections:
@@ -373,15 +376,20 @@ async def lot_monitor_websocket(websocket: WebSocket):
                 continue
             
             try:
+                # Decode image (fast operation, keep synchronous)
                 image = frame_processor.decode_base64_image(image_data)
                 camera_id = (data.get("camera_id") or data.get("gate_id") or data.get("lot_id") or "unknown")
                 parking_lot_id = (data.get("parking_lot_id") or data.get("parkingLotId") or data.get("lot_id") or "unknown")
                 logger.debug(f"[LOT] Frame received (#{frame_count}): lot={parking_lot_id}, camera={camera_id}, image_len={len(image_data)}")
                 
-                result = parking_slot_detector.detect_slots(
+                # Run detection in thread pool (non-blocking)
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    executor,
+                    parking_slot_detector.detect_slots,
                     image,
-                    camera_id=camera_id,
-                    parking_lot_id=parking_lot_id
+                    camera_id,
+                    parking_lot_id
                 )
                 
                 if ai_event_pipeline and result.slots:

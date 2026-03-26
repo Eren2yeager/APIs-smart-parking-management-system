@@ -1,19 +1,16 @@
 """
 License Plate Detection Model
-Integrates Roboflow + EasyOCR for license plate detection and recognition
+Uses Roboflow Workflow API for license plate detection and OCR
 """
 
-from roboflow import Roboflow
-import easyocr
+from inference_sdk import InferenceHTTPClient
 import cv2
 import numpy as np
-from PIL import Image
 import tempfile
 import os
-import re
 import time
-from typing import Dict, List, Optional, Tuple
-from io import BytesIO
+from typing import Dict, List, Optional
+from PIL import Image
 
 from config.settings import settings
 from utils.logger import logger
@@ -21,58 +18,47 @@ from schemas.detection_result import LicensePlateDetection, BoundingBox
 
 
 class LicensePlateDetectorModel:
-    """License plate detection and OCR model using Roboflow + EasyOCR"""
+    """License plate detection and OCR model using Roboflow Workflow API"""
     
     def __init__(self):
-        """Initialize Roboflow and EasyOCR models"""
-        self.detection_model = None
-        self._init_roboflow()
-        self._init_easyocr()
+        """Initialize Roboflow Workflow client"""
+        self.client = None
+        self._init_workflow_client()
         
         # Performance tracking
         self.api_call_times = []
         self.max_tracked_times = 20
         
-        if self.detection_model:
-            logger.info("License Plate Detector initialized successfully")
+        if self.client:
+            logger.info("License Plate Detector initialized successfully (Workflow API)")
         else:
-            logger.warning("License Plate Detector initialized WITHOUT model (will retry on first request)")
+            logger.warning("License Plate Detector initialized WITHOUT client (will retry on first request)")
     
-    def _init_roboflow(self):
-        """Initialize Roboflow license plate detection model"""
+    def _init_workflow_client(self):
+        """Initialize Roboflow Workflow HTTP client"""
         try:
-            rf = Roboflow(api_key=settings.roboflow_api_key)
+            self.client = InferenceHTTPClient(
+                api_url="https://serverless.roboflow.com",
+                api_key=settings.roboflow_api_key
+            )
             
-            # Use workspace() without parameter if workspace is empty
-            if settings.roboflow_workspace:
-                project = rf.workspace(settings.roboflow_workspace).project(
-                    settings.roboflow_license_plate_project
-                )
-            else:
-                project = rf.workspace().project(settings.roboflow_license_plate_project)
+            # Store workflow configuration from environment variables
+            self.workspace_name = settings.roboflow_workspace
+            self.workflow_id = settings.roboflow_license_plate_workflow_id
             
-            self.detection_model = project.version(settings.roboflow_license_plate_version).model
+            if not self.workspace_name:
+                raise ValueError("ROBOFLOW_WORKSPACE environment variable is required")
+            if not settings.roboflow_api_key:
+                raise ValueError("ROBOFLOW_API_KEY environment variable is required")
             
-            # Convert confidence threshold (already 0-100 from .env)
-            self.confidence_threshold = int(settings.plate_detection_confidence)
-            self.overlap_threshold = 30
+            # Convert confidence threshold (0-100 to 0-1 for comparison)
+            self.confidence_threshold = settings.plate_detection_confidence / 100.0
             
-            logger.info(f"Roboflow license plate detector loaded (confidence: {self.confidence_threshold}%)")
+            logger.info(f"Roboflow Workflow client initialized (workspace: {self.workspace_name}, workflow: {self.workflow_id})")
         except Exception as e:
-            logger.error(f"Failed to initialize Roboflow: {e}")
+            logger.error(f"Failed to initialize Roboflow Workflow client: {e}")
             logger.warning("License plate detector will not be available")
-            self.detection_model = None
-    
-    def _init_easyocr(self):
-        """Initialize EasyOCR reader (CPU mode for Roboflow API setup)."""
-        try:
-            logger.info("Loading EasyOCR (CPU mode)...")
-            # Using CPU mode since Roboflow handles model inference on their servers
-            self.ocr_reader = easyocr.Reader(["en"], gpu=False)
-            logger.info("EasyOCR loaded successfully (CPU)")
-        except Exception as e:
-            logger.error(f"EasyOCR initialization failed: {e}")
-            raise
+            self.client = None
     
     def detect_and_recognize(
         self,
@@ -81,7 +67,7 @@ class LicensePlateDetectorModel:
         parking_lot_id: str
     ) -> List[LicensePlateDetection]:
         """
-        Detect license plates and recognize text
+        Detect license plates and recognize text using Roboflow Workflow
         
         Args:
             image: OpenCV image (numpy array)
@@ -92,63 +78,20 @@ class LicensePlateDetectorModel:
             List of license plate detections with recognized text
         """
         start_time = time.time()
-        
-        try:
-            # Step 1: Detect license plate regions
-            detections = self._detect_plates(image)
-            
-            if not detections:
-                return []
-            
-            # Step 2: Crop and recognize each plate
-            results = []
-            for detection in detections:
-                bbox = detection['bbox']
-                confidence = detection['confidence']
-                
-                # Crop plate region
-                cropped_plate = self._crop_region(image, bbox)
-                
-                # Run OCR
-                ocr_result = self._recognize_text(cropped_plate)
-                
-                if ocr_result and ocr_result['text']:
-                    results.append(LicensePlateDetection(
-                        plate_number=ocr_result['text'],
-                        confidence=min(confidence, ocr_result['confidence']),  # Use minimum of both confidences
-                        bbox=BoundingBox(**bbox),
-                        camera_id=camera_id,
-                        parking_lot_id=parking_lot_id,
-                        processing_time_ms=(time.time() - start_time) * 1000
-                    ))
-            
-            processing_time = (time.time() - start_time) * 1000
-            logger.debug(f"Detected {len(results)} plates in {processing_time:.2f}ms")
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"License plate detection failed: {e}")
-            return []
-    
-    def _detect_plates(self, image: np.ndarray) -> List[Dict]:
-        """
-        Detect license plate regions using Roboflow
-        
-        Args:
-            image: OpenCV image
-            
-        Returns:
-            List of detection dictionaries with bbox and confidence
-        """
-        api_start = time.time()
         temp_path = None
         
         try:
-            # Convert to PIL Image and resize for faster API calls
+            # Lazy retry: if client failed to load at startup, try again now
+            if self.client is None:
+                logger.info("Retrying Roboflow Workflow client initialization...")
+                self._init_workflow_client()
+                if self.client is None:
+                    raise RuntimeError("Roboflow Workflow client not available — check API key and network")
+            
+            # Convert to PIL Image and save to temporary file
             pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
             
-            # Resize to max 640px for faster processing
+            # Resize to max 640px for faster processing (workflow optimized for this size)
             max_dimension = 640
             scale_factor = 1.0
             if max(pil_image.size) > max_dimension:
@@ -159,21 +102,18 @@ class LicensePlateDetectorModel:
             # Save to temporary file
             with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
                 temp_path = temp_file.name
-                pil_image.save(temp_path, quality=75)
+                pil_image.save(temp_path, quality=85)
             
-            # Lazy retry: if model failed to load at startup, try again now
-            if self.detection_model is None:
-                logger.info("Retrying Roboflow license plate model initialization...")
-                self._init_roboflow()
-                if self.detection_model is None:
-                    raise RuntimeError("Roboflow license plate model not available — check API key and network")
-
-            # Run Roboflow detection
-            result = self.detection_model.predict(
-                temp_path,
-                confidence=self.confidence_threshold,
-                overlap=self.overlap_threshold
-            ).json()
+            # Track API call time
+            api_start = time.time()
+            
+            # Run workflow
+            result = self.client.run_workflow(
+                workspace_name=self.workspace_name,
+                workflow_id=self.workflow_id,
+                images={"image": temp_path},
+                use_cache=True
+            )
             
             # Track API time
             api_time = time.time() - api_start
@@ -181,29 +121,16 @@ class LicensePlateDetectorModel:
             if len(self.api_call_times) > self.max_tracked_times:
                 self.api_call_times.pop(0)
             
-            # Parse predictions
-            detections = []
-            for prediction in result.get('predictions', []):
-                # Convert from center coordinates to corner coordinates
-                x = int(prediction['x'] / scale_factor)
-                y = int(prediction['y'] / scale_factor)
-                width = int(prediction['width'] / scale_factor)
-                height = int(prediction['height'] / scale_factor)
-                
-                x1 = x - width // 2
-                y1 = y - height // 2
-                x2 = x + width // 2
-                y2 = y + height // 2
-                
-                detections.append({
-                    'confidence': prediction['confidence'],
-                    'bbox': {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
-                })
+            # Parse workflow output
+            detections = self._parse_workflow_output(result, scale_factor, camera_id, parking_lot_id, start_time)
+            
+            processing_time = (time.time() - start_time) * 1000
+            logger.debug(f"Detected {len(detections)} plates in {processing_time:.2f}ms")
             
             return detections
             
         except Exception as e:
-            logger.error(f"Roboflow detection failed: {e}")
+            logger.error(f"License plate detection failed: {e}")
             return []
         finally:
             # Cleanup temp file
@@ -213,96 +140,77 @@ class LicensePlateDetectorModel:
                 except:
                     pass
     
-    def _crop_region(self, image: np.ndarray, bbox: Dict) -> np.ndarray:
+    def _parse_workflow_output(
+        self,
+        result: List[Dict],
+        scale_factor: float,
+        camera_id: str,
+        parking_lot_id: str,
+        start_time: float
+    ) -> List[LicensePlateDetection]:
         """
-        Crop region from image with padding
+        Parse workflow output and convert to LicensePlateDetection objects
         
         Args:
-            image: OpenCV image
-            bbox: Bounding box dict with x1, y1, x2, y2
+            result: Workflow API response
+            scale_factor: Image scaling factor applied before detection
+            camera_id: Camera identifier
+            parking_lot_id: Parking lot identifier
+            start_time: Detection start time
             
         Returns:
-            Cropped image region
+            List of LicensePlateDetection objects
         """
-        height, width = image.shape[:2]
+        detections = []
         
-        # Add 10% padding for better OCR
-        x1, y1, x2, y2 = bbox['x1'], bbox['y1'], bbox['x2'], bbox['y2']
-        padding_x = int((x2 - x1) * 0.1)
-        padding_y = int((y2 - y1) * 0.1)
-        
-        x1 = max(0, x1 - padding_x)
-        y1 = max(0, y1 - padding_y)
-        x2 = min(width, x2 + padding_x)
-        y2 = min(height, y2 + padding_y)
-        
-        cropped = image[y1:y2, x1:x2].copy()
-        
-        # Ensure minimum size for OCR
-        crop_height, crop_width = cropped.shape[:2]
-        if crop_height < 30 or crop_width < 80:
-            scale = max(30 / crop_height, 80 / crop_width)
-            new_width = int(crop_width * scale)
-            new_height = int(crop_height * scale)
-            cropped = cv2.resize(cropped, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
-        
-        return cropped
-    
-    def _recognize_text(self, cropped_plate: np.ndarray) -> Optional[Dict]:
-        """
-        Recognize text from cropped license plate using EasyOCR
-        
-        Args:
-            cropped_plate: Cropped plate image
-            
-        Returns:
-            Dict with text, raw_text, and confidence, or None if no text found
-        """
         try:
-            results = self.ocr_reader.readtext(cropped_plate)
+            if not result or len(result) == 0:
+                return detections
             
-            if not results:
-                return None
+            # Extract predictions and OCR text from workflow output
+            workflow_output = result[0]
+            predictions = workflow_output.get("predictions", {}).get("predictions", [])
+            ocr_texts = workflow_output.get("ocr_text", [])
             
-            # Collect valid results (at least 3 alphanumeric characters)
-            all_texts = []
-            for (bbox, text, confidence) in results:
-                cleaned = re.sub(r'[^A-Z0-9]', '', text.upper())
-                if len(cleaned) >= 3:
-                    all_texts.append({
-                        'text': cleaned,
-                        'raw': text,
-                        'confidence': confidence
-                    })
-            
-            if not all_texts:
-                return None
-            
-            # Get best result by confidence
-            best = max(all_texts, key=lambda x: x['confidence'])
-            
-            # If multiple results, try combining them
-            if len(all_texts) > 1:
-                combined_text = ''.join([t['text'] for t in all_texts])
-                combined_raw = ' '.join([t['raw'] for t in all_texts])
-                avg_conf = sum([t['confidence'] for t in all_texts]) / len(all_texts)
+            # Match predictions with OCR text (workflow returns them in order)
+            for idx, prediction in enumerate(predictions):
+                # Filter by confidence threshold
+                confidence = prediction.get("confidence", 0.0)
+                if confidence < self.confidence_threshold:
+                    continue
                 
-                if len(combined_text) > len(best['text']) and avg_conf > 0.3:
-                    best = {
-                        'text': combined_text,
-                        'raw': combined_raw,
-                        'confidence': avg_conf
-                    }
-            
-            return {
-                'text': best['text'],
-                'raw_text': best['raw'],
-                'confidence': best['confidence']
-            }
+                # Get OCR text for this detection (if available)
+                plate_text = ocr_texts[idx] if idx < len(ocr_texts) else ""
+                
+                # Skip if no text recognized
+                if not plate_text or len(plate_text.strip()) < 3:
+                    continue
+                
+                # Extract bounding box (convert from center coordinates to corner coordinates)
+                x = int(prediction["x"] / scale_factor)
+                y = int(prediction["y"] / scale_factor)
+                width = int(prediction["width"] / scale_factor)
+                height = int(prediction["height"] / scale_factor)
+                
+                x1 = x - width // 2
+                y1 = y - height // 2
+                x2 = x + width // 2
+                y2 = y + height // 2
+                
+                # Create detection object
+                detections.append(LicensePlateDetection(
+                    plate_number=plate_text.strip().upper(),
+                    confidence=confidence,
+                    bbox=BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2),
+                    camera_id=camera_id,
+                    parking_lot_id=parking_lot_id,
+                    processing_time_ms=(time.time() - start_time) * 1000
+                ))
             
         except Exception as e:
-            logger.error(f"OCR failed: {e}")
-            return None
+            logger.error(f"Failed to parse workflow output: {e}")
+        
+        return detections
     
     def get_avg_api_time(self) -> float:
         """Get average API call time in milliseconds"""
