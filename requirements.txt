@@ -1,6 +1,7 @@
 # AI/ML Models
 roboflow>=1.1.0
-easyocr>=1.7.0
+easyocr==1.7.0
+python-bidi==0.4.2
 opencv-python>=4.8.0
 numpy>=1.24.0
 
