@@ -14,6 +14,7 @@ from PIL import Image
 
 from config.settings import settings
 from utils.logger import logger
+from utils.slot_sorter import assign_sorted_slot_ids
 from schemas.detection_result import ParkingSlotDetection, ParkingSlotDetectionResult, BoundingBox
 
 
@@ -164,8 +165,12 @@ class ParkingSlotDetectorModel:
             workflow_output = result[0]
             predictions = workflow_output.get("predictions", {}).get("predictions", [])
             
+            # Sort predictions by position (left to right, row by row) and assign sorted slot IDs
+            # This ensures consistent slot ordering regardless of how Roboflow groups them
+            predictions = assign_sorted_slot_ids(predictions, row_threshold=50)
+            
             # Process each prediction
-            for idx, prediction in enumerate(predictions):
+            for prediction in predictions:
                 # Filter by confidence threshold
                 confidence = prediction.get("confidence", 0.0)
                 if confidence < self.confidence_threshold:
@@ -197,8 +202,11 @@ class ParkingSlotDetectorModel:
                 y2 = y + height // 2
                 
                 # Create slot detection object
+                # Use the sorted_slot_id assigned by the sorting utility
+                slot_id = prediction.get('sorted_slot_id', len(slots) + 1)
+                
                 slots.append(ParkingSlotDetection(
-                    slot_id=idx + 1,
+                    slot_id=slot_id,
                     status=status,
                     confidence=confidence,
                     bbox=BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2)

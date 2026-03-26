@@ -65,3 +65,5 @@ htmlcov/
 
 # Documentation builds
 docs/_build/
+
+.workflow&output.md
