@@ -69,14 +69,17 @@ def get_capacity_slot_store_snapshot(parking_lot_id: str) -> dict:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
-def set_slot_store_data(parking_lot_id: str, slot_id: int, status: str, confidence: float) -> None:
+def set_slot_store_data(parking_lot_id: str, slot_id: int, status: str, confidence: float, bbox: dict = None) -> None:
     if parking_lot_id not in _capacity_slot_store:
         _capacity_slot_store[parking_lot_id] = {}
-    _capacity_slot_store[parking_lot_id][slot_id] = {
+    slot_data = {
         "slot_id": slot_id,
         "status": status,
         "confidence": confidence,
     }
+    if bbox:
+        slot_data["bbox"] = bbox
+    _capacity_slot_store[parking_lot_id][slot_id] = slot_data
 
 
 def set_slot_store_batch(parking_lot_id: str, slots: list) -> None:
@@ -85,6 +88,7 @@ def set_slot_store_batch(parking_lot_id: str, slots: list) -> None:
             "slot_id": s.get("slot_id", s.get("slotId", i)),
             "status": s.get("status", "empty"),
             "confidence": s.get("confidence", 0.0),
+            "bbox": s.get("bbox", {"x1": 0, "y1": 0, "x2": 0, "y2": 0}),
         }
         for i, s in enumerate(slots)
     }

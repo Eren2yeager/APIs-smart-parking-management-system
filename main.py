@@ -41,12 +41,18 @@ ai_event_pipeline = None
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, List[WebSocket]] = {}
+        self.processing_state: Dict[int, bool] = {}  # Track processing state per connection
     
     async def connect(self, websocket: WebSocket, channel: str):
         await websocket.accept()
         if channel not in self.active_connections:
             self.active_connections[channel] = []
         self.active_connections[channel].append(websocket)
+        
+        # Initialize processing state
+        connection_id = id(websocket)
+        self.processing_state[connection_id] = False
+        
         logger.info(f"Client connected to {channel}")
     
     def disconnect(self, websocket: WebSocket, channel: str):
@@ -55,7 +61,22 @@ class ConnectionManager:
                 self.active_connections[channel].remove(websocket)
             except ValueError:
                 pass
+        
+        # Cleanup processing state
+        connection_id = id(websocket)
+        self.processing_state.pop(connection_id, None)
+        
         logger.info(f"Client disconnected from {channel}")
+    
+    def is_processing(self, websocket: WebSocket) -> bool:
+        """Check if connection is currently processing a frame"""
+        connection_id = id(websocket)
+        return self.processing_state.get(connection_id, False)
+    
+    def set_processing(self, websocket: WebSocket, processing: bool):
+        """Set processing state for connection"""
+        connection_id = id(websocket)
+        self.processing_state[connection_id] = processing
     
     async def broadcast(self, message: dict, channel: str):
         if channel in self.active_connections:
@@ -280,10 +301,19 @@ async def gate_monitor_websocket(websocket: WebSocket):
     await manager.connect(websocket, "gate-monitor")
     logger.info("[GATE] Client connected to /ws/gate-monitor")
     frame_count = 0  # frame skip counter
+    dropped_frames = 0  # track dropped frames
     
     try:
         while True:
             data = await websocket.receive_json()
+            
+            # BACKPRESSURE: Drop frame if still processing previous one
+            if manager.is_processing(websocket):
+                dropped_frames += 1
+                if dropped_frames % 10 == 0:  # Log every 10 dropped frames
+                    logger.warning(f"[GATE] Dropped {dropped_frames} frames - backend overloaded")
+                continue
+            
             image_data = data.get("data") or data.get("image", "")
             if not image_data:
                 logger.warning("[GATE] Frame skipped: no 'data' or 'image' in payload")
@@ -295,6 +325,9 @@ async def gate_monitor_websocket(websocket: WebSocket):
                 continue
             
             try:
+                # Set processing flag
+                manager.set_processing(websocket, True)
+                
                 # Decode image (fast operation, keep synchronous)
                 image = frame_processor.decode_base64_image(image_data)
                 camera_id = (data.get("camera_id") or data.get("gate_id") or data.get("lot_id") or "unknown")
@@ -339,10 +372,18 @@ async def gate_monitor_websocket(websocket: WebSocket):
                             "y2": detection.bbox.y2
                         }
                     })
+                
+                # Reset dropped frames counter on successful processing
+                if dropped_frames > 0:
+                    logger.info(f"[GATE] Recovered - processed frame after dropping {dropped_frames}")
+                    dropped_frames = 0
                         
             except Exception as decode_error:
                 logger.error(f"[GATE] Frame processing error: {decode_error}")
                 await manager.safe_send(websocket, {"event_type": "error", "error": str(decode_error)})
+            finally:
+                # Always reset processing flag
+                manager.set_processing(websocket, False)
     
     except WebSocketDisconnect:
         logger.info("[GATE] Client disconnected from gate-monitor")
@@ -401,6 +442,12 @@ async def lot_monitor_websocket(websocket: WebSocket):
                             slot_id=slot.slot_id,
                             status=slot.status,
                             confidence=slot.confidence,
+                            bbox={
+                                "x1": slot.bbox.x1,
+                                "y1": slot.bbox.y1,
+                                "x2": slot.bbox.x2,
+                                "y2": slot.bbox.y2
+                            },
                             timestamp=timestamp
                         )
                     logger.info(f"[LOT] Pipeline fed {len(result.slots)} slot(s) for lot={parking_lot_id}, occupied={result.occupied}/{result.total_slots}")

@@ -137,6 +137,7 @@ class AIEventPipeline:
         slot_id: int = 0,
         status: str = "empty",
         confidence: float = 0.0,
+        bbox: dict = None,
         timestamp: Optional[int] = None,
     ) -> None:
         if not self._running:
@@ -148,7 +149,7 @@ class AIEventPipeline:
             return
 
         ts = timestamp if timestamp is not None else int(time.time() * 1000)
-        set_slot_store_data(parking_lot_id, slot_id, status, confidence)
+        set_slot_store_data(parking_lot_id, slot_id, status, confidence, bbox)
         self._schedule_capacity_flush(parking_lot_id, camera_id, ts)
 
     def add_capacity_batch(
